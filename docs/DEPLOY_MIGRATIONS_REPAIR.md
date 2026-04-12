@@ -28,9 +28,15 @@ supabase db push
 Si aplicas manualmente con `psql`:
 
 ```bash
+# PR #30 — migraciones base
 psql "$DATABASE_URL" -f supabase/migrations/00016_accounting.sql
 psql "$DATABASE_URL" -f supabase/migrations/00017_fiscal_base.sql
 psql "$DATABASE_URL" -f supabase/migrations/00018_fiscal_core.sql
+
+# PR #31 — hardening + multi-issuer (incrementales)
+psql "$DATABASE_URL" -f supabase/migrations/00019_accounting_hardening.sql
+psql "$DATABASE_URL" -f supabase/migrations/00020_fiscal_base_ext.sql
+psql "$DATABASE_URL" -f supabase/migrations/00021_fiscal_core_multi_issuer.sql
 ```
 
 > **Importante:** las migraciones deben ejecutarse en el orden numérico indicado porque
@@ -62,9 +68,12 @@ La secuencia definitiva queda:
 00013_donaciones_patrocinios.sql
 00014_desarrollo_economico.sql
 00015_marketplace.sql
-00016_accounting.sql          ← NUEVO (reparación)
-00017_fiscal_base.sql         ← NUEVO (reparación)
-00018_fiscal_core.sql         ← NUEVO (reparación)
+00016_accounting.sql               ← NUEVO (PR #30 – reparación)
+00017_fiscal_base.sql              ← NUEVO (PR #30 – reparación)
+00018_fiscal_core.sql              ← NUEVO (PR #30 – reparación)
+00019_accounting_hardening.sql     ← NUEVO (PR #31 – hardening)
+00020_fiscal_base_ext.sql          ← NUEVO (PR #31 – identificación fiscal)
+00021_fiscal_core_multi_issuer.sql ← NUEVO (PR #31 – multi-emisor)
 00025_add_payment_id_to_sources.sql
 ```
 
@@ -97,6 +106,8 @@ Si en el futuro se agregan migraciones entre `00018` y `00025`, usar `00019`–`
   mecanismo de colas, encolar aquí la transmisión automática al PAC/DGI (ver comentario
   TODO en el cuerpo de la función).
 
-- **Emisor activo (MVP)**: La RPC `emit_fiscal_invoice_from_source` toma el primer
-  emisor activo del sistema. En un escenario multi-emisor, deberá recibir `p_issuer_id`
-  como parámetro o resolverlo desde la entidad fuente.
+- **Multi-emisor (PR #31)**: La RPC `emit_fiscal_invoice_from_source(source_module, source_id)`
+  ahora es un wrapper seguro que falla explícitamente si hay 0 o más de 1 emisor activo.
+  Para escenarios multi-emisor, usar la nueva firma
+  `emit_fiscal_invoice_from_source(p_issuer_id, p_source_module, p_source_id)`.
+  Ver `docs/FISCAL_MULTI_ISSUER.md` para guía de migración y uso.
