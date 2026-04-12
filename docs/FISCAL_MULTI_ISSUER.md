@@ -249,9 +249,170 @@ La secuencia completa de migraciones queda:
 00016_accounting.sql
 00017_fiscal_base.sql
 00018_fiscal_core.sql
-00019_accounting_hardening.sql   ← NUEVO (PR #31)
-00020_fiscal_base_ext.sql        ← NUEVO (PR #31)
-00021_fiscal_core_multi_issuer.sql ← NUEVO (PR #31)
+00019_accounting_hardening.sql     ← PR #31
+00020_fiscal_base_ext.sql          ← PR #31
+00021_fiscal_core_multi_issuer.sql ← PR #31
+00022_multi_tenant_rls_lockdown.sql ← PR #33
+00025_add_payment_id_to_sources.sql
+```
+
+---
+
+## F) Lockdown estricto multi-tenant (PR #33 / migración 00022)
+
+### Cambio de comportamiento: filas legacy con `tenant_actor_id IS NULL`
+
+A partir de `00022_multi_tenant_rls_lockdown.sql`, las políticas RLS de todas las
+tablas contables y fiscales eliminan el escape `OR tenant_actor_id IS NULL`.
+
+**Antes (00019–00021):**
+```sql
+-- Cualquier rol podía ver filas sin tenant asignado
+USING (
+    has_role('admin')
+    OR (tenant_actor_id IS NOT NULL AND is_tenant_member(...))
+    OR tenant_actor_id IS NULL   -- ← escape eliminado
+)
+```
+
+**Después (00022):**
+```sql
+-- Solo admin ve filas legacy (tenant NULL)
+USING (
+    has_role('admin')
+    OR (tenant_actor_id IS NOT NULL AND is_tenant_member(...))
+)
+```
+
+> ⚠️ **Advertencia**: Si tu base de datos tiene filas con `tenant_actor_id IS NULL`
+> creadas antes de este lockdown, esas filas quedarán **invisibles para roles
+> no-admin** hasta que se ejecute el backfill (ver sección siguiente).
+
+### Guía de backfill: poblar `tenant_actor_id` en tablas existentes
+
+Antes de aplicar la migración 00022 en producción, ejecuta el backfill
+correspondiente a tu modelo de datos. Los scripts de ejemplo asumen que existe
+un único tenant por ahora; ajústalos si ya tienes múltiples tenants.
+
+```sql
+-- ─── Variables de contexto ────────────────────────────────────────────────────
+-- Reemplaza '<TENANT_ID>' con el UUID del actors.id de tu organización.
+
+-- 1) chart_of_accounts
+UPDATE chart_of_accounts
+   SET tenant_actor_id = '<TENANT_ID>'
+ WHERE tenant_actor_id IS NULL;
+
+-- 2) journal_entries
+UPDATE journal_entries
+   SET tenant_actor_id = '<TENANT_ID>'
+ WHERE tenant_actor_id IS NULL;
+
+-- 3) accounting_mappings
+UPDATE accounting_mappings
+   SET tenant_actor_id = '<TENANT_ID>'
+ WHERE tenant_actor_id IS NULL;
+
+-- 4) actor_tax_profiles
+UPDATE actor_tax_profiles
+   SET tenant_actor_id = '<TENANT_ID>'
+ WHERE tenant_actor_id IS NULL;
+
+-- 5) issuers
+UPDATE issuers
+   SET tenant_actor_id = '<TENANT_ID>'
+ WHERE tenant_actor_id IS NULL;
+
+-- 6) fiscal_numbering_series
+UPDATE fiscal_numbering_series
+   SET tenant_actor_id = '<TENANT_ID>'
+ WHERE tenant_actor_id IS NULL;
+
+-- 7) fiscal_documents
+UPDATE fiscal_documents
+   SET tenant_actor_id = '<TENANT_ID>'
+ WHERE tenant_actor_id IS NULL;
+
+-- 8) fiscal_document_lines
+UPDATE fiscal_document_lines
+   SET tenant_actor_id = '<TENANT_ID>'
+ WHERE tenant_actor_id IS NULL;
+
+-- 9) fiscal_taxes
+UPDATE fiscal_taxes
+   SET tenant_actor_id = '<TENANT_ID>'
+ WHERE tenant_actor_id IS NULL;
+
+-- 10) fiscal_withholdings
+UPDATE fiscal_withholdings
+   SET tenant_actor_id = '<TENANT_ID>'
+ WHERE tenant_actor_id IS NULL;
+
+-- 11) fiscal_transmissions
+UPDATE fiscal_transmissions
+   SET tenant_actor_id = '<TENANT_ID>'
+ WHERE tenant_actor_id IS NULL;
+```
+
+Para verificar cuántas filas quedan pendientes antes del backfill:
+
+```sql
+SELECT 'chart_of_accounts'     AS tabla, COUNT(*) AS pendientes FROM chart_of_accounts     WHERE tenant_actor_id IS NULL
+UNION ALL
+SELECT 'journal_entries',                COUNT(*)               FROM journal_entries         WHERE tenant_actor_id IS NULL
+UNION ALL
+SELECT 'accounting_mappings',            COUNT(*)               FROM accounting_mappings     WHERE tenant_actor_id IS NULL
+UNION ALL
+SELECT 'actor_tax_profiles',             COUNT(*)               FROM actor_tax_profiles      WHERE tenant_actor_id IS NULL
+UNION ALL
+SELECT 'issuers',                        COUNT(*)               FROM issuers                 WHERE tenant_actor_id IS NULL
+UNION ALL
+SELECT 'fiscal_numbering_series',        COUNT(*)               FROM fiscal_numbering_series WHERE tenant_actor_id IS NULL
+UNION ALL
+SELECT 'fiscal_documents',               COUNT(*)               FROM fiscal_documents        WHERE tenant_actor_id IS NULL
+UNION ALL
+SELECT 'fiscal_document_lines',          COUNT(*)               FROM fiscal_document_lines   WHERE tenant_actor_id IS NULL
+UNION ALL
+SELECT 'fiscal_taxes',                   COUNT(*)               FROM fiscal_taxes            WHERE tenant_actor_id IS NULL
+UNION ALL
+SELECT 'fiscal_withholdings',            COUNT(*)               FROM fiscal_withholdings     WHERE tenant_actor_id IS NULL
+UNION ALL
+SELECT 'fiscal_transmissions',           COUNT(*)               FROM fiscal_transmissions    WHERE tenant_actor_id IS NULL;
+```
+
+### Propagación automática de tenant a partir de 00022
+
+Después del lockdown, las funciones SECURITY DEFINER asignan tenant automáticamente:
+
+| Función | Fuente del tenant |
+|---------|-------------------|
+| `post_payment_to_journal(payment_id)` | Inferido de `marketplace_orders.buyer_id`, `memberships.actor_id` o `donations.donor_actor_id` vía `payment_id` |
+| `emit_fiscal_invoice_from_source(issuer_id, ...)` | Derivado de `issuers.tenant_actor_id` |
+
+Si `post_payment_to_journal` no puede inferir el tenant (pago sin fuente vinculada),
+lanza una excepción explícita en lugar de crear un asiento sin tenant.
+
+### Aplicar la migración de lockdown
+
+```bash
+# Con Supabase CLI
+supabase db push
+
+# Con psql (ejecutar ANTES la migración si no está en el historial)
+psql "$DATABASE_URL" -f supabase/migrations/00022_multi_tenant_rls_lockdown.sql
+```
+
+Orden completo de migraciones:
+
+```
+00001 … 00015   (base existente)
+00016_accounting.sql
+00017_fiscal_base.sql
+00018_fiscal_core.sql
+00019_accounting_hardening.sql
+00020_fiscal_base_ext.sql
+00021_fiscal_core_multi_issuer.sql
+00022_multi_tenant_rls_lockdown.sql   ← NUEVO (PR #33)
 00025_add_payment_id_to_sources.sql
 ```
 
