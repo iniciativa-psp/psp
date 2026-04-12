@@ -62,6 +62,26 @@ export async function createDonation(
   return data
 }
 
+/**
+ * Vincula un pago (payments.id) a una donación.
+ * Idempotente: si la donación ya tiene ese payment_id, no lanza error.
+ */
+export async function linkPaymentToDonation(
+  donationId: string,
+  paymentId: string,
+): Promise<Donation> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('donations')
+    .update({ payment_id: paymentId })
+    .eq('id', donationId)
+    .select()
+    .single()
+
+  if (error) throw new Error(`linkPaymentToDonation: ${error.message}`)
+  return data
+}
+
 // ---------------------------------------------------------------------------
 // Patrocinios
 // ---------------------------------------------------------------------------

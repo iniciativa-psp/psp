@@ -196,6 +196,105 @@ export async function updatePaymentStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Confirmación de pago con validación de entidad fuente
+// ---------------------------------------------------------------------------
+
+/**
+ * Resultado de confirmación de pago.
+ * `source_linked` indica si se encontró una entidad fuente vinculada al pago.
+ * Cuando es `false`, la emisión fiscal automática debe omitirse.
+ */
+export interface ConfirmPaymentResult {
+  payment: Payment
+  source_linked: boolean
+  source_module: 'marketplace' | 'memberships' | 'donations' | null
+  source_id: string | null
+}
+
+/**
+ * Marca un pago como completado y verifica que exista una entidad fuente
+ * vinculada (marketplace_orders, membership_invoices o donations) con ese
+ * payment_id.  Si no existe ninguna entidad fuente enlazada, `source_linked`
+ * será `false` y la emisión fiscal automática debe ser suprimida por el
+ * llamador.
+ */
+export async function confirmPayment(
+  id: string,
+  notes?: string,
+): Promise<ConfirmPaymentResult> {
+  const supabase = await createClient()
+
+  // 1. Actualizar estado del pago a 'completed'
+  const { data: payment, error: paymentError } = await supabase
+    .from('payments')
+    .update({ status: 'completed', notes })
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (paymentError) throw new Error(`confirmPayment: ${paymentError.message}`)
+
+  // 2. Buscar entidad fuente enlazada
+  const [orderRes, invoiceRes, donationRes] = await Promise.all([
+    supabase
+      .from('marketplace_orders')
+      .select('id')
+      .eq('payment_id', id)
+      .maybeSingle(),
+    supabase
+      .from('membership_invoices')
+      .select('id')
+      .eq('payment_id', id)
+      .maybeSingle(),
+    supabase
+      .from('donations')
+      .select('id')
+      .eq('payment_id', id)
+      .maybeSingle(),
+  ])
+
+  if (orderRes.data) {
+    return {
+      payment,
+      source_linked: true,
+      source_module: 'marketplace',
+      source_id: orderRes.data.id,
+    }
+  }
+
+  if (invoiceRes.data) {
+    return {
+      payment,
+      source_linked: true,
+      source_module: 'memberships',
+      source_id: invoiceRes.data.id,
+    }
+  }
+
+  if (donationRes.data) {
+    return {
+      payment,
+      source_linked: true,
+      source_module: 'donations',
+      source_id: donationRes.data.id,
+    }
+  }
+
+  // No se encontró entidad fuente vinculada — loguear advertencia
+  console.warn(
+    `confirmPayment: payment ${id} confirmed but no source entity found. ` +
+      'Automatic fiscal emission will be skipped.',
+  )
+
+  return {
+    payment,
+    source_linked: false,
+    source_module: null,
+    source_id: null,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Estadísticas / totales
 // ---------------------------------------------------------------------------
 

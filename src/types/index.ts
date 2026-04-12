@@ -886,6 +886,7 @@ export interface MarketplaceOrder {
   payment_method: string | null
   payment_reference: string | null
   paid_at: string | null
+  payment_id: string | null
   notes: string | null
   created_by: string | null
   created_at: string
@@ -1063,6 +1064,7 @@ export interface MembershipInvoice {
   due_date: string | null
   paid_at: string | null
   payment_method: string | null
+  payment_id: string | null
   notes: string | null
   created_at: string
 }
@@ -1273,6 +1275,7 @@ export interface Donation {
   receipt_url: string | null
   status: string
   donation_date: string
+  payment_id: string | null
   notes: string | null
   created_by: string | null
   created_at: string

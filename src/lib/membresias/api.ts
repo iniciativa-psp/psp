@@ -164,6 +164,41 @@ export async function getMembershipInvoices(membershipId: string): Promise<Membe
   return data ?? []
 }
 
+/** Crea una nueva factura de membresía. */
+export async function createMembershipInvoice(
+  payload: Omit<MembershipInvoice, 'id' | 'created_at'>,
+): Promise<MembershipInvoice> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('membership_invoices')
+    .insert(payload)
+    .select()
+    .single()
+
+  if (error) throw new Error(`createMembershipInvoice: ${error.message}`)
+  return data
+}
+
+/**
+ * Vincula un pago (payments.id) a una factura de membresía.
+ * Idempotente: si la factura ya tiene ese payment_id, no lanza error.
+ */
+export async function linkPaymentToMembershipInvoice(
+  invoiceId: string,
+  paymentId: string,
+): Promise<MembershipInvoice> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('membership_invoices')
+    .update({ payment_id: paymentId })
+    .eq('id', invoiceId)
+    .select()
+    .single()
+
+  if (error) throw new Error(`linkPaymentToMembershipInvoice: ${error.message}`)
+  return data
+}
+
 // ---------------------------------------------------------------------------
 // Estadísticas / KPIs
 // ---------------------------------------------------------------------------
