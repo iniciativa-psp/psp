@@ -226,18 +226,16 @@ const { data } = await supabase.rpc('emit_fiscal_invoice_from_source', {
 
    | Fuente | Ruta de inferencia |
    |--------|--------------------|
-   | Marketplace | `marketplace_orders.payment_id` → `marketplace_order_items.seller_id` (single-seller) |
+   | Marketplace | `marketplace_orders.payment_id` → `marketplace_orders.buyer_id` |
    | Membresías | `membership_invoices.payment_id` → `memberships.actor_id` |
-   | Donaciones | **No se infiere** — `donor_actor_id` no es un tenant |
+   | Donaciones | `donations.payment_id` → `donations.donor_actor_id` |
 
    > **Prerequisito:** La migración `00025_add_payment_id_to_sources.sql` debe estar
-   > aplicada para que `marketplace_orders.payment_id` y `membership_invoices.payment_id`
-   > existan. Sin ella, la inferencia nunca encontrará filas y la función fallará con
-   > "No se pudo inferir tenant_actor_id".
+   > aplicada para que `marketplace_orders.payment_id`, `membership_invoices.payment_id`
+   > y `donations.payment_id` existan. Sin ella, la inferencia nunca encontrará filas
+   > y la función fallará con "No se pudo inferir tenant_actor_id".
 
-   - Si el pedido tiene **más de 1 vendedor** distinto → excepción clara.
-   - Si el pago es una **donación** → excepción clara (donor no es tenant).
-   - Si no se puede inferir → excepción "no vinculado a marketplace ni membresías".
+   - Si no se puede inferir → excepción "no vinculado a ninguna marketplace_order, membership_invoice ni donation conocida".
 
 ---
 
