@@ -360,3 +360,27 @@ export async function getCartItems(actorId: string): Promise<MarketplaceCartItem
   if (error) throw new Error(`getCartItems: ${error.message}`)
   return (data ?? []) as MarketplaceCartItem[]
 }
+
+// ---------------------------------------------------------------------------
+// Payment linking
+// ---------------------------------------------------------------------------
+
+/**
+ * Vincula un pago (payments.id) a un pedido del marketplace.
+ * Idempotente: si la orden ya tiene ese payment_id, no lanza error.
+ */
+export async function linkPaymentToOrder(
+  orderId: string,
+  paymentId: string,
+): Promise<MarketplaceOrder> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('marketplace_orders')
+    .update({ payment_id: paymentId })
+    .eq('id', orderId)
+    .select()
+    .single()
+
+  if (error) throw new Error(`linkPaymentToOrder: ${error.message}`)
+  return data as MarketplaceOrder
+}
