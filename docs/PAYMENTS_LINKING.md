@@ -154,7 +154,7 @@ un proceso de importación manual coordinado con el equipo de operaciones.
 
 ---
 
-### Índices y constrains creados
+### Índices y constraints creados
 
 | Tabla | Columna | Tipo |
 |---|---|---|
