@@ -475,7 +475,12 @@ BEGIN
           AND  doc_type  = 'invoice'
           AND  is_active = TRUE;
 
-        v_doc_number_str := COALESCE(v_series_prefix || '-', '') || LPAD(v_doc_number::TEXT, 8, '0');
+        -- Formato: 'PREFIX-00000001' si prefix no es NULL; '00000001' si es NULL.
+        IF v_series_prefix IS NOT NULL THEN
+            v_doc_number_str := v_series_prefix || '-' || LPAD(v_doc_number::TEXT, 8, '0');
+        ELSE
+            v_doc_number_str := LPAD(v_doc_number::TEXT, 8, '0');
+        END IF;
     ELSE
         -- Sin serie activa: continuar sin doc_number (se asignará manualmente más adelante)
         v_doc_number_str := NULL;
