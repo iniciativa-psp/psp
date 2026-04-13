@@ -15,6 +15,17 @@ Este PR de reparación agrega las tres migraciones faltantes:
 | `00017_fiscal_base.sql` | Perfiles fiscales de actores (`actor_tax_profiles`) y emisores (`issuers`) |
 | `00018_fiscal_core.sql` | Núcleo de facturación PAC-agnóstico: series, documentos, líneas, impuestos, retenciones, transmisiones, log de eventos, reglas paramétricas, RPCs |
 
+## Migraciones relevantes del módulo multi-tenant + fiscal
+
+| Archivo | Contenido |
+|---------|-----------|
+| `00019_accounting_hardening.sql` | `actor_memberships`, `tenant_actor_id` en tablas contables, hardening de `post_payment_to_journal` |
+| `00020_fiscal_base_ext.sql` | `tax_id_type`/`tax_id_value` en `actor_tax_profiles`, `tenant_actor_id` en tablas fiscales base |
+| `00021_fiscal_core_multi_issuer.sql` | Nueva firma multi-emisor de `emit_fiscal_invoice_from_source`, `doc_number` automático |
+| `00025_add_payment_id_to_sources.sql` | `payment_id` FK en `marketplace_orders`, `membership_invoices`, `donations` |
+| `00022_multi_tenant_rls_lockdown.sql` | RLS lockdown estricto, inferencia de `tenant_actor_id` en `post_payment_to_journal` |
+| `00023_fix_post_payment_tenant_inference.sql` | Corrige inferencia: tenant = seller/issuer (no buyer/cliente/donor) |
+
 ## Cómo aplicar las migraciones en orden
 
 Las migraciones deben aplicarse de forma secuencial respetando su numeración.
@@ -37,12 +48,27 @@ psql "$DATABASE_URL" -f supabase/migrations/00018_fiscal_core.sql
 psql "$DATABASE_URL" -f supabase/migrations/00019_accounting_hardening.sql
 psql "$DATABASE_URL" -f supabase/migrations/00020_fiscal_base_ext.sql
 psql "$DATABASE_URL" -f supabase/migrations/00021_fiscal_core_multi_issuer.sql
+
+# PR #29 — linking de pagos a fuentes
+# ⚠️ IMPORTANTE: 00025 debe aplicarse ANTES de 00022 y de ejecutar
+# post_payment_to_journal con pagos vinculados por payment_id.
+psql "$DATABASE_URL" -f supabase/migrations/00025_add_payment_id_to_sources.sql
+
+# PR #33 — lockdown multi-tenant estricto
+psql "$DATABASE_URL" -f supabase/migrations/00022_multi_tenant_rls_lockdown.sql
+
+# PR #36 — corrección de inferencia de tenant (seller/issuer, no buyer/cliente/donor)
+psql "$DATABASE_URL" -f supabase/migrations/00023_fix_post_payment_tenant_inference.sql
 ```
 
 > **Importante:** las migraciones deben ejecutarse en el orden numérico indicado porque
 > `00018_fiscal_core.sql` referencia tablas creadas en `00017_fiscal_base.sql` (`issuers`,
 > `actor_tax_profiles`), y `00016_accounting.sql` referencia `payment_concepts` y
 > `payments` que existen desde `00002_pagos.sql`.
+>
+> **`00025` debe estar aplicado antes de `00022` y antes de ejecutar
+> `post_payment_to_journal`** para flujos basados en `payment_id`. Si se aplica `00022`
+> sin `00025`, la función no podrá encontrar fuentes y fallará.
 
 ## Nota sobre numeración
 
@@ -74,12 +100,20 @@ La secuencia definitiva queda:
 00019_accounting_hardening.sql     ← NUEVO (PR #31 – hardening)
 00020_fiscal_base_ext.sql          ← NUEVO (PR #31 – identificación fiscal)
 00021_fiscal_core_multi_issuer.sql ← NUEVO (PR #31 – multi-emisor)
+00022_multi_tenant_rls_lockdown.sql ← NUEVO (PR #33 – lockdown multi-tenant)
+00023_fix_post_payment_tenant_inference.sql ← NUEVO (PR #36 – fix tenant inference)
 00025_add_payment_id_to_sources.sql
 ```
 
-Si en el futuro se agregan migraciones entre `00018` y `00025`, usar `00019`–`00024`.
+> ⚠️ **Nota sobre el orden no-numérico de `00025`:** El archivo `00025` lleva ese número
+> porque fue creado (PR #29) antes de que se numeraran `00022`–`00024`. Su contenido
+> (agregar la columna `payment_id` en fuentes) es un prerequisito funcional de `00022`
+> y `00023`. Por eso, aunque el número de `00025` es mayor, **debe aplicarse antes** de
+> `00022` y `00023` en cualquier despliegue manual con `psql`. Ver la sección
+> "Cómo aplicar las migraciones en orden" para la secuencia correcta de `psql`.
+Si en el futuro se agregan migraciones entre `00023` y `00025`, usar `00024`.
 
-## Dependencias y orden lógico
+
 
 ```
 00002_pagos         (payments, payment_concepts)
@@ -90,8 +124,12 @@ Si en el futuro se agregan migraciones entre `00018` y `00025`, usar `00019`–`
         └── 00018_fiscal_core  (fiscal_documents, fiscal_numbering_series, ...)
 
 00015_marketplace / 00011_membresias / 00013_donaciones
-    └── 00025_add_payment_id_to_sources  (payment_id FK)
+    └── 00025_add_payment_id_to_sources  (payment_id FK)  ← debe ir ANTES de 00022 y 00023
     └── 00018_fiscal_core  (emit_fiscal_invoice_from_source usa marketplace_orders, membership_invoices, donations)
+
+00019_accounting_hardening (actor_memberships, is_tenant_member(), tenant_actor_id)
+    └── 00022_multi_tenant_rls_lockdown  (lockdown RLS, post_payment_to_journal con inferencia)
+        └── 00023_fix_post_payment_tenant_inference  (corrige inferencia: tenant = seller/issuer)
 ```
 
 ## TODOs documentados
@@ -111,3 +149,13 @@ Si en el futuro se agregan migraciones entre `00018` y `00025`, usar `00019`–`
   Para escenarios multi-emisor, usar la nueva firma
   `emit_fiscal_invoice_from_source(p_issuer_id, p_source_module, p_source_id)`.
   Ver `docs/FISCAL_MULTI_ISSUER.md` para guía de migración y uso.
+
+- **Issuer/tenant explícito para membresías (PR #36)**: `post_payment_to_journal` falla
+  explícitamente para pagos de membresías porque `memberships.actor_id` es el
+  miembro/cliente, no el issuer/tenant. Agregar `issuer_actor_id` o `tenant_actor_id`
+  en `memberships` o `membership_invoices` para habilitar el posting automático.
+
+- **Recipient/tenant explícito para donaciones (PR #36)**: `post_payment_to_journal`
+  falla explícitamente para pagos de donaciones porque `donor_actor_id` es el donante,
+  no el recipient/tenant. Agregar `recipient_actor_id` o `tenant_actor_id` en `donations`
+  para habilitar el posting automático.
