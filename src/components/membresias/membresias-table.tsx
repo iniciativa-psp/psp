@@ -65,9 +65,10 @@ function initials(name: string): string {
 
 interface MembresiasTableProps {
   memberships: MembershipSummary[]
+  basePath?: string
 }
 
-export function MembresiasTable({ memberships }: MembresiasTableProps) {
+export function MembresiasTable({ memberships, basePath = '/dashboard/membresias' }: MembresiasTableProps) {
   if (memberships.length === 0) {
     return (
       <div className="text-center py-12 text-muted-foreground text-sm">
@@ -103,7 +104,7 @@ export function MembresiasTable({ memberships }: MembresiasTableProps) {
                     {initials(m.actor_full_name ?? '?')}
                   </div>
                   <Link
-                    href={`/dashboard/membresias/${m.id}`}
+                    href={`${basePath}/${m.id}`}
                     className="font-medium hover:underline text-foreground"
                   >
                     {m.actor_full_name}
@@ -158,7 +159,7 @@ export function MembresiasTable({ memberships }: MembresiasTableProps) {
               {/* Acciones */}
               <td className="px-4 py-3 text-right">
                 <Link
-                  href={`/dashboard/membresias/${m.id}`}
+                  href={`${basePath}/${m.id}`}
                   className="text-primary hover:underline text-xs"
                 >
                   Ver detalle

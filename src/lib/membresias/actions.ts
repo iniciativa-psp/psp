@@ -55,6 +55,7 @@ export async function createSubscriptionAction(
     const notes = str(formData.get('notes'))
     const amount_paid_raw = str(formData.get('amount_paid'))
     const amount_paid = amount_paid_raw ? Number(amount_paid_raw) : null
+    const tenant_actor_id = str(formData.get('tenant_actor_id'))
 
     if (!actor_id) return { success: false, error: 'El miembro es requerido.' }
     if (!plan_id) return { success: false, error: 'El plan es requerido.' }
@@ -76,10 +77,13 @@ export async function createSubscriptionAction(
       suspended_by: null,
       amount_paid,
       payment_method: payment_method as PaymentMethod,
-      metadata: notes ? { notes } : {},
+      metadata: { ...(notes ? { notes } : {}), ...(tenant_actor_id ? { tenant_actor_id } : {}) },
       created_by: null,
     })
 
+    if (tenant_actor_id) {
+      revalidatePath(`/dashboard/${tenant_actor_id}/membresias`)
+    }
     revalidatePath('/dashboard/membresias')
     return { success: true, id: membership.id }
   } catch (err) {
@@ -100,6 +104,7 @@ export async function updateSubscriptionAction(
     const notes = str(formData.get('notes'))
     const amount_paid_raw = str(formData.get('amount_paid'))
     const amount_paid = amount_paid_raw ? Number(amount_paid_raw) : undefined
+    const tenant_actor_id = str(formData.get('tenant_actor_id'))
 
     await updateMembership(id, {
       ...(plan_id ? { plan_id } : {}),
@@ -110,6 +115,9 @@ export async function updateSubscriptionAction(
       ...(notes !== undefined ? { metadata: { notes } } : {}),
     })
 
+    if (tenant_actor_id) {
+      revalidatePath(`/dashboard/${tenant_actor_id}/membresias`)
+    }
     revalidatePath('/dashboard/membresias')
     revalidatePath(`/dashboard/membresias/${id}`)
     return { success: true }

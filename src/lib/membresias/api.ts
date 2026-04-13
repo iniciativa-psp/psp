@@ -11,6 +11,67 @@ import type {
 } from '@/types'
 
 // ---------------------------------------------------------------------------
+// Tenant helpers
+// ---------------------------------------------------------------------------
+
+export interface TenantWithName {
+  tenant_actor_id: string
+  actor_name: string
+}
+
+/**
+ * Devuelve los tenants activos del usuario autenticado desde actor_memberships,
+ * incluyendo el nombre del tenant (join con actors).
+ */
+export async function getActiveTenants(): Promise<TenantWithName[]> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('actor_memberships')
+    .select('tenant_actor_id, actors!actor_memberships_tenant_actor_id_fkey(full_name)')
+    .eq('is_active', true)
+
+  if (error) throw new Error(`getActiveTenants: ${error.message}`)
+
+  return (data ?? []).map(row => {
+    const actor = row.actors as { full_name: string } | null
+    return {
+      tenant_actor_id: row.tenant_actor_id as string,
+      actor_name: actor?.full_name ?? (row.tenant_actor_id as string),
+    }
+  })
+}
+
+/**
+ * Devuelve el issuer_id del emisor activo para el tenant indicado.
+ * - Si no hay ningún emisor activo → lanza error accionable.
+ * - Si hay más de uno → lanza error accionable (multi-issuer requiere selector/default).
+ * - Si hay exactamente uno → devuelve su id.
+ */
+export async function getActiveIssuerForTenant(tenantActorId: string): Promise<string> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('issuers')
+    .select('id')
+    .eq('tenant_actor_id', tenantActorId)
+    .eq('is_active', true)
+
+  if (error) throw new Error(`getActiveIssuerForTenant: ${error.message}`)
+
+  const issuers = data ?? []
+  if (issuers.length === 0) {
+    throw new Error(
+      'No hay un emisor activo configurado para este tenant. Configure un emisor activo antes de crear facturas.',
+    )
+  }
+  if (issuers.length > 1) {
+    throw new Error(
+      `Hay ${issuers.length} emisores activos para este tenant. Solo puede haber uno activo a la vez. Desactive los emisores adicionales antes de continuar.`,
+    )
+  }
+  return issuers[0].id
+}
+
+// ---------------------------------------------------------------------------
 // Planes de membresía
 // ---------------------------------------------------------------------------
 
@@ -164,14 +225,25 @@ export async function getMembershipInvoices(membershipId: string): Promise<Membe
   return data ?? []
 }
 
-/** Crea una nueva factura de membresía. */
+/**
+ * Crea una nueva factura de membresía.
+ * Si se proporciona `tenantActorId` y el payload no incluye `issuer_id`,
+ * resuelve automáticamente el emisor activo del tenant.
+ */
 export async function createMembershipInvoice(
   payload: Omit<MembershipInvoice, 'id' | 'created_at'>,
+  tenantActorId?: string,
 ): Promise<MembershipInvoice> {
+  let resolvedPayload = { ...payload }
+
+  if (tenantActorId && !resolvedPayload.issuer_id) {
+    resolvedPayload.issuer_id = await getActiveIssuerForTenant(tenantActorId)
+  }
+
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('membership_invoices')
-    .insert(payload)
+    .insert(resolvedPayload)
     .select()
     .single()
 
