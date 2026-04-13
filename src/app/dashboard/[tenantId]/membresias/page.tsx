@@ -70,6 +70,11 @@ export default async function TenantMembresiasPage({
 
   const basePath = `/dashboard/${tenantId}/membresias`
 
+  // Note: getMemberships and getMembresiaStats operate on the full dataset visible
+  // to the authenticated user. Data isolation per tenant is enforced at the DB
+  // level via RLS policies. The `memberships` table does not carry a
+  // `tenant_actor_id` column, so tenant scoping happens through the issuer/payment
+  // chain and RLS, not a direct column filter.
   const [plansResult, membershipsResult, stats, profile] = await Promise.all([
     getMembershipPlans({ status: 'published', pageSize: 50 }),
     getMemberships({ status, planId, search, page, pageSize: 20 }),

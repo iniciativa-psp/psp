@@ -60,7 +60,7 @@ export async function getActiveIssuerForTenant(tenantActorId: string): Promise<s
   const issuers = data ?? []
   if (issuers.length === 0) {
     throw new Error(
-      'No hay un emisor activo configurado para este tenant. Configure un issuer activo antes de crear facturas.',
+      'No hay un emisor activo configurado para este tenant. Configure un emisor activo antes de crear facturas.',
     )
   }
   if (issuers.length > 1) {
