@@ -2,8 +2,10 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { PlusIcon, CreditCardIcon } from 'lucide-react'
+
 import { getMembershipPlans, getMemberships, getMembresiaStats, getActiveTenants } from '@/lib/membresias/api'
 import { getProfile } from '@/lib/auth'
+
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -14,10 +16,6 @@ import type { MembershipStatus } from '@/types'
 export const metadata: Metadata = {
   title: 'Membresías — SIG-PSP',
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function formatCurrency(n: number): string {
   return new Intl.NumberFormat('es-PA', { style: 'currency', currency: 'USD' }).format(n)
@@ -36,10 +34,6 @@ const PLAN_COLORS: Record<string, string> = {
   inversor_social_com: 'bg-yellow-50 border-yellow-200 text-yellow-800',
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
-
 interface SearchParams {
   plan?: string
   estado?: string
@@ -56,25 +50,19 @@ export default async function TenantMembresiasPage({
 }) {
   const { tenantId } = await params
   const sp = await searchParams
+
   const page = Math.max(1, Number(sp.page ?? 1))
   const status = sp.estado as MembershipStatus | undefined
   const planId = sp.plan || undefined
   const search = sp.search || undefined
 
-  // Validate that the current user belongs to this tenant
+  // Guardrail: el usuario debe pertenecer al tenant solicitado
   const tenants = await getActiveTenants()
   const currentTenant = tenants.find(t => t.tenant_actor_id === tenantId)
-  if (!currentTenant) {
-    notFound()
-  }
+  if (!currentTenant) notFound()
 
   const basePath = `/dashboard/${tenantId}/membresias`
 
-  // Note: getMemberships and getMembresiaStats operate on the full dataset visible
-  // to the authenticated user. Data isolation per tenant is enforced at the DB
-  // level via RLS policies. The `memberships` table does not carry a
-  // `tenant_actor_id` column, so tenant scoping happens through the issuer/payment
-  // chain and RLS, not a direct column filter.
   const [plansResult, membershipsResult, stats, profile] = await Promise.all([
     getMembershipPlans({ status: 'published', pageSize: 50 }),
     getMemberships({ status, planId, search, page, pageSize: 20 }),
@@ -82,11 +70,10 @@ export default async function TenantMembresiasPage({
     getProfile(),
   ])
 
-  const canManage = profile?.role && ['superadmin', 'admin', 'gestor', 'operador'].includes(profile.role)
+  const canManage = !!profile?.role && ['superadmin', 'admin', 'gestor', 'operador'].includes(profile.role)
+
   const plans = plansResult.data
   const memberships = membershipsResult.data
-
-  // Count active memberships per plan for plan cards
   const activeMembersByPlan = stats.by_plan
 
   return (
@@ -101,11 +88,13 @@ export default async function TenantMembresiasPage({
             <span>/</span>
             <span className="text-foreground font-medium">{currentTenant.actor_name}</span>
           </nav>
+
           <h1 className="text-2xl font-bold text-foreground">Membresías</h1>
           <p className="text-muted-foreground mt-1">
             Gestión de planes, suscripciones y beneficios para miembros.
           </p>
         </div>
+
         {canManage && (
           <Link href={`${basePath}/nueva`}>
             <Button className="gap-2">
@@ -134,9 +123,7 @@ export default async function TenantMembresiasPage({
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                Ingresos del mes
-              </CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">Ingresos del mes</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-green-700">
@@ -147,9 +134,7 @@ export default async function TenantMembresiasPage({
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                Ingresos del año
-              </CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">Ingresos del año</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-primary">
@@ -160,9 +145,7 @@ export default async function TenantMembresiasPage({
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                Tasa de renovación
-              </CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">Tasa de renovación</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-blue-700">{stats.renewal_rate}%</div>
@@ -191,9 +174,7 @@ export default async function TenantMembresiasPage({
                   </Badge>
                 </div>
                 {plan.description && (
-                  <CardDescription className="text-xs mt-2 line-clamp-2">
-                    {plan.description}
-                  </CardDescription>
+                  <CardDescription className="text-xs mt-2 line-clamp-2">{plan.description}</CardDescription>
                 )}
               </CardContent>
             </Card>
@@ -204,9 +185,7 @@ export default async function TenantMembresiasPage({
       {/* Filters + table */}
       <section>
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-          <h2 className="text-lg font-semibold">
-            Suscripciones ({membershipsResult.count})
-          </h2>
+          <h2 className="text-lg font-semibold">Suscripciones ({membershipsResult.count})</h2>
         </div>
 
         <Card>
@@ -245,9 +224,11 @@ export default async function TenantMembresiasPage({
                     ← Anterior
                   </Link>
                 )}
+
                 <span className="px-3 py-1.5 text-sm text-muted-foreground">
                   Página {page} de {membershipsResult.totalPages}
                 </span>
+
                 {page < membershipsResult.totalPages && (
                   <Link
                     href={`${basePath}?${new URLSearchParams({
