@@ -1,23 +1,66 @@
 -- =============================================================================
--- 00023_fix_post_payment_tenant_inference.sql
+-- 00024_memberships_add_issuer_id.sql
 --
--- Corrige la inferencia de tenant_actor_id en post_payment_to_journal:
+-- Agrega membership_invoices.issuer_id (FK a issuers.id) para identificar
+-- explícitamente la organización emisora de cada factura de membresía.
 --
---   ANTES (00022): usaba buyer_id / memberships.actor_id / donor_actor_id
---                  (cliente, NO issuer/seller → asiento contable en el tenant incorrecto)
+-- Contexto:
+--   memberships.actor_id = miembro/cliente (NO el issuer/tenant).
+--   Para posting contable y emisión fiscal coherentes, la invoice debe
+--   referenciar el issuer (organización dueña de la membresía).
 --
---   AHORA (00023):
---     • Marketplace → seller único (via marketplace_order_items.seller_id)
---       Si hay más de un seller → RAISE EXCEPTION (requiere split o posting por seller)
---     • Memberships → RAISE EXCEPTION
---       (memberships.actor_id es el miembro/cliente; falta issuer_id — ver 00024)
---     • Donations   → RAISE EXCEPTION
---       (donor_actor_id es el donante, no el tenant receptor)
+-- Cambios:
+--   1. ALTER TABLE membership_invoices ADD COLUMN issuer_id (nullable inicialmente
+--      para no romper filas existentes; backfill manual antes de agregar NOT NULL).
+--   2. Índice en membership_invoices(issuer_id).
+--   3. Actualización de post_payment_to_journal: memberships ahora infieren
+--      tenant_actor_id vía membership_invoices.issuer_id → issuers.tenant_actor_id.
 --
--- NOTA: NO modifica 00022_multi_tenant_rls_lockdown.sql.
---       Las RLS policies quedan intactas.
+-- Backfill (manual, antes de agregar NOT NULL):
+--   Si opera con un único issuer activo por tenant, ejecutar el siguiente script
+--   de backfill ANTES de aplicar un constraint NOT NULL en una migración futura:
+--
+--   UPDATE membership_invoices mi
+--      SET issuer_id = (
+--          SELECT i.id
+--          FROM   issuers i
+--          WHERE  i.is_active = TRUE
+--          LIMIT  1
+--      )
+--    WHERE mi.issuer_id IS NULL;
+--
+--   En entornos multi-issuer, la asignación debe ser explícita según la
+--   organización dueña del plan de membresía.
 -- =============================================================================
 
+-- -----------------------------------------------------------------------------
+-- 1) Columna issuer_id en membership_invoices
+-- -----------------------------------------------------------------------------
+ALTER TABLE membership_invoices
+    ADD COLUMN IF NOT EXISTS issuer_id UUID
+        REFERENCES issuers(id) ON DELETE RESTRICT;
+
+COMMENT ON COLUMN membership_invoices.issuer_id
+    IS 'Organización emisora de la factura de membresía (FK a issuers.id). '
+       'Determina el tenant para posting contable y emisión fiscal. '
+       'Nullable inicialmente para compatibilidad con datos existentes; '
+       'debe poblarse al crear nuevas invoices. '
+       'Ver docs/FISCAL_MULTI_ISSUER.md para guía de backfill de datos legados.';
+
+-- -----------------------------------------------------------------------------
+-- 2) Índice en membership_invoices.issuer_id
+-- -----------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_membership_invoices_issuer_id
+    ON membership_invoices (issuer_id);
+
+-- -----------------------------------------------------------------------------
+-- 3) Actualizar post_payment_to_journal para soportar memberships vía issuer_id
+--
+--    Ahora que membership_invoices.issuer_id existe, la inferencia de tenant
+--    para memberships usa: membership_invoices.issuer_id → issuers.tenant_actor_id
+--
+--    Si issuer_id es NULL en la invoice: falla con mensaje accionable.
+-- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION post_payment_to_journal(p_payment_id UUID)
 RETURNS UUID
 LANGUAGE plpgsql
@@ -30,6 +73,7 @@ DECLARE
     v_entry_id          UUID;
     v_tenant_actor_id   UUID;
     v_seller_count      INT;
+    v_invoice_id        UUID;
 BEGIN
     -- Verificar rol: permitir operador o superior (cubre gestor, admin)
     IF NOT has_role('operador') THEN
@@ -68,20 +112,25 @@ BEGIN
             p_payment_id, v_seller_count;
     END IF;
 
-    -- Intento 2: Memberships — NO se puede inferir tenant con el esquema actual.
-    -- memberships.actor_id es el miembro/cliente, no el issuer/organización emisora.
-    -- Ver migración 00024 para la solución: membership_invoices.issuer_id.
+    -- Intento 2: Memberships → issuer_id → issuers.tenant_actor_id
     IF v_tenant_actor_id IS NULL THEN
-        IF EXISTS (
+        SELECT mi.id, i.tenant_actor_id
+        INTO   v_invoice_id, v_tenant_actor_id
+        FROM   membership_invoices mi
+        JOIN   issuers i ON i.id = mi.issuer_id
+        WHERE  mi.payment_id = p_payment_id
+        LIMIT  1;
+
+        -- Si existe la invoice pero issuer_id es NULL: fallar con mensaje accionable
+        IF v_tenant_actor_id IS NULL AND EXISTS (
             SELECT 1 FROM membership_invoices mi
             WHERE mi.payment_id = p_payment_id
         ) THEN
             RAISE EXCEPTION
-                'El pago % está vinculado a una membership_invoice pero no se puede inferir '
-                'el tenant/issuer porque memberships.actor_id representa al miembro/cliente, '
-                'no a la organización emisora. '
-                'Solución: agregue membership_invoices.issuer_id (ver migración 00024) y '
-                'asegúrese de poblar ese campo al crear la invoice.',
+                'El pago % está vinculado a una membership_invoice pero issuer_id es NULL. '
+                'Asigne membership_invoices.issuer_id al crear la invoice, o ejecute el '
+                'backfill documentado en docs/FISCAL_MULTI_ISSUER.md (sección G) para '
+                'poblar invoices existentes.',
                 p_payment_id;
         END IF;
     END IF;
@@ -177,6 +226,7 @@ COMMENT ON FUNCTION post_payment_to_journal(UUID)
     IS 'Crea o recupera el asiento contable para un pago confirmado. '
        'Infiere tenant_actor_id = seller/issuer (NUNCA buyer/cliente/donante). '
        'Marketplace: seller único vía order_items; multi-seller falla con excepción. '
-       'Memberships: falla hasta que membership_invoices.issuer_id esté disponible (ver 00024). '
+       'Memberships: tenant vía membership_invoices.issuer_id → issuers.tenant_actor_id; '
+       '  falla si issuer_id es NULL (requiere poblar el campo al crear la invoice). '
        'Donations: falla hasta que donations.recipient_actor_id esté disponible. '
        'Idempotente, concurrencia segura, requiere rol operador o superior.';

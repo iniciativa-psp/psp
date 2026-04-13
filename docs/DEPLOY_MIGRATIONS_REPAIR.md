@@ -62,21 +62,23 @@ psql "$DATABASE_URL" -f supabase/migrations/00021_fiscal_core_multi_issuer.sql
 # post_payment_to_journal con pagos vinculados por payment_id.
 psql "$DATABASE_URL" -f supabase/migrations/00025_add_payment_id_to_sources.sql
 
-# PR #33 — lockdown multi-tenant estricto
-psql "$DATABASE_URL" -f supabase/migrations/00022_multi_tenant_rls_lockdown.sql
-
-# PR #36 — corrección de inferencia de tenant (seller/issuer, no buyer/cliente/donor)
+# Fix de inferencia de tenant (tenant = seller/issuer) para post_payment_to_journal
+# Corrige: marketplace usa seller_id (no buyer_id); memberships y donations fallan
+# explícitamente hasta tener issuer/recipient explícito.
 psql "$DATABASE_URL" -f supabase/migrations/00023_fix_post_payment_tenant_inference.sql
+
+# Agrega membership_invoices.issuer_id y habilita posting para membresías
+psql "$DATABASE_URL" -f supabase/migrations/00024_memberships_add_issuer_id.sql
 ```
 
-> **Importante:** las migraciones deben ejecutarse en el orden numérico indicado porque
-> `00018_fiscal_core.sql` referencia tablas creadas en `00017_fiscal_base.sql` (`issuers`,
-> `actor_tax_profiles`), y `00016_accounting.sql` referencia `payment_concepts` y
-> `payments` que existen desde `00002_pagos.sql`.
+> Nota: `00023_fix_post_payment_tenant_inference.sql` reemplaza la función `post_payment_to_journal` para que el
+> `tenant_actor_id` se derive del **seller/issuer** (no del buyer/cliente). Para membresías, requiere también
+> `00024_memberships_add_issuer_id.sql` que agrega `membership_invoices.issuer_id`.
 >
-> **`00025` debe estar aplicado antes de `00022` y antes de ejecutar
-> `post_payment_to_journal`** para flujos basados en `payment_id`. Si se aplica `00022`
-> sin `00025`, la función no podrá encontrar fuentes y fallará.
+> Nota: `00024_memberships_add_issuer_id.sql` agrega la columna `membership_invoices.issuer_id` (nullable) y
+> actualiza `post_payment_to_journal` para derivar tenant desde esa columna. Tras aplicar `00024`, todas las
+> nuevas membership_invoices deben incluir `issuer_id`. Para invoices legadas, ejecutar el backfill documentado
+> en `docs/FISCAL_MULTI_ISSUER.md` (sección G).
 
 ## Nota sobre numeración
 
@@ -108,8 +110,9 @@ La secuencia definitiva queda:
 00019_accounting_hardening.sql     ← NUEVO (PR #31 – hardening)
 00020_fiscal_base_ext.sql          ← NUEVO (PR #31 – identificación fiscal)
 00021_fiscal_core_multi_issuer.sql ← NUEVO (PR #31 – multi-emisor)
-00022_multi_tenant_rls_lockdown.sql ← NUEVO (PR #33 – lockdown multi-tenant)
-00023_fix_post_payment_tenant_inference.sql ← NUEVO (PR #36 – fix tenant inference)
+00022_multi_tenant_rls_lockdown.sql
+00023_fix_post_payment_tenant_inference.sql  ← NUEVO (fix tenant=seller para marketplace; fail-fast memberships/donations)
+00024_memberships_add_issuer_id.sql          ← NUEVO (membership_invoices.issuer_id + posting para membresías)
 00025_add_payment_id_to_sources.sql
 ```
 

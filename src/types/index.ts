@@ -1065,6 +1065,8 @@ export interface MembershipInvoice {
   paid_at: string | null
   payment_method: string | null
   payment_id: string | null
+  /** Organización emisora de la factura (FK a issuers.id). Requerido para posting contable y emisión fiscal. */
+  issuer_id: string | null
   notes: string | null
   created_at: string
 }
