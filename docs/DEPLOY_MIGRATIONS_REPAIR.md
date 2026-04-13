@@ -28,15 +28,23 @@ Este PR de reparación agrega las tres migraciones faltantes:
 
 ## Cómo aplicar las migraciones en orden
 
-Las migraciones deben aplicarse de forma secuencial respetando su numeración.
-Si usas **Supabase CLI**:
+En general, las migraciones deben aplicarse de forma secuencial respetando su numeración.
+Si usas **Supabase CLI**, aplica el historial completo con:
 
 ```bash
 # Asegúrate de estar autenticado y conectado al proyecto correcto
 supabase db push
 ```
 
-Si aplicas manualmente con `psql`:
+### ⚠️ Excepción operativa (dependencias por `payment_id`)
+Aunque las migraciones están numeradas, **algunos flujos funcionales** (por ejemplo `post_payment_to_journal(payment_id)`)
+dependen de que existan columnas `payment_id` en las tablas fuente (`marketplace_orders`, `membership_invoices`, `donations`).
+
+Por eso, si vas a ejecutar o probar **posting contable basado en `payment_id`**, asegúrate de que la migración
+`00025_add_payment_id_to_sources.sql` ya fue aplicada **antes** de ejecutar esos flujos (incluso si aplicas manualmente
+con `psql`).
+
+### Aplicación manual con psql (base + hardening)
 
 ```bash
 # PR #30 — migraciones base
