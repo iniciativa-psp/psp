@@ -224,11 +224,16 @@ const { data } = await supabase.rpc('emit_fiscal_invoice_from_source', {
 4. **Inferencia de `tenant_actor_id`** — La función ahora infiere el tenant desde las
    fuentes del pago y lo setea en `journal_entries.tenant_actor_id` al insertar:
 
-   | Fuente | Ruta de inferencia |
-   |--------|--------------------|
-   | Marketplace | `marketplace_orders.payment_id` → `marketplace_orders.buyer_id` |
-   | Membresías | `membership_invoices.payment_id` → `memberships.actor_id` |
-   | Donaciones | `donations.payment_id` → `donations.donor_actor_id` |
+   | Fuente | Ruta de inferencia (00022) | Corrección (00023 / 00024) |
+   |--------|-----------------------------|----------------------------|
+   | Marketplace | `marketplace_orders.payment_id` → `marketplace_orders.buyer_id` ❌ | seller único via `marketplace_order_items.seller_id` ✅ |
+   | Membresías | `membership_invoices.payment_id` → `memberships.actor_id` ❌ | `membership_invoices.issuer_id` → `issuers.tenant_actor_id` ✅ (desde `00024`) |
+   | Donaciones | `donations.payment_id` → `donations.donor_actor_id` ❌ | falla explícitamente (falta `recipient_actor_id`) |
+
+   > **⚠️ Nota:** `00022` infería `tenant_actor_id` desde el **buyer/cliente/donante**,
+   > lo que produce asientos contables asignados al tenant incorrecto. Las migraciones
+   > `00023` y `00024` corrigen este comportamiento. Aplicar ambas migraciones para
+   > tener inferencia correcta de tenant para marketplace y membresías.
 
    > **Prerequisito:** La migración `00025_add_payment_id_to_sources.sql` debe estar
    > aplicada para que `marketplace_orders.payment_id`, `membership_invoices.payment_id`
@@ -351,22 +356,27 @@ WHERE  je.source_type       = 'payment'
 
 ### F.2) Backfill de `journal_entries` desde membresías
 
-Utiliza la ruta `membership_invoices.payment_id → memberships.actor_id`.
+> ⚠️ **Obsoleto con `00024`:** Con la migración `00024`, el tenant se infiere vía
+> `membership_invoices.issuer_id → issuers.tenant_actor_id`. El backfill correcto
+> de `journal_entries` para pagos de membresía debe usar esa ruta, no `actor_id`.
+> Ver sección [G.3](#g3-backfill-de-membership_invoices-legadas) para poblar
+> `issuer_id` en invoices legadas primero.
 
 ```sql
--- Ver cuántos asientos se actualizarían (dry-run)
-SELECT je.id, je.source_id AS payment_id, m.actor_id AS tenant_actor_id
+-- Backfill de journal_entries para pagos de membresía (CORRECTO: via issuer)
+-- Ejecutar DESPUÉS de poblar membership_invoices.issuer_id (sección G.3)
+SELECT je.id, je.source_id AS payment_id, i.tenant_actor_id
 FROM   journal_entries je
 JOIN   membership_invoices mi ON mi.payment_id = je.source_id
-JOIN   memberships m           ON m.id         = mi.membership_id
+JOIN   issuers i               ON i.id         = mi.issuer_id
 WHERE  je.source_type       = 'payment'
   AND  je.tenant_actor_id IS NULL;
 
 -- Actualizar (ejecutar solo tras revisar el dry-run)
 UPDATE journal_entries je
-   SET tenant_actor_id = m.actor_id
+   SET tenant_actor_id = i.tenant_actor_id
 FROM   membership_invoices mi
-JOIN   memberships m ON m.id = mi.membership_id
+JOIN   issuers i ON i.id = mi.issuer_id
 WHERE  je.source_type       = 'payment'
   AND  je.source_id         = mi.payment_id
   AND  je.tenant_actor_id IS NULL;
@@ -401,7 +411,136 @@ de sus `journal_entries` asociadas tras el lockdown requerirá asignación manua
 
 ---
 
+## G) `membership_invoices.issuer_id` — Nueva columna (desde `00024`)
+
+### G.1) Contexto y motivación
+
+`memberships.actor_id` representa al **miembro/cliente**, no a la organización emisora.
+Por tanto, la función `post_payment_to_journal` no puede derivar el `tenant_actor_id`
+correcto desde esa columna para membresías.
+
+La migración `00024_memberships_add_issuer_id.sql` agrega:
+
+```sql
+membership_invoices.issuer_id  uuid  REFERENCES issuers(id) ON DELETE RESTRICT
+```
+
+Esto permite que la inferencia de tenant use la ruta:
+```
+membership_invoices.issuer_id → issuers.tenant_actor_id
+```
+
+### G.2) Requisito en creación de invoice
+
+Al insertar una nueva `membership_invoice`, **siempre se debe pasar `issuer_id`**:
+
+```typescript
+// Código de aplicación — src/lib/membresias/api.ts
+await createMembershipInvoice({
+  membership_id: '...',
+  invoice_number: '...',
+  amount: 100,
+  itbms: 7,
+  total: 107,
+  issuer_id: '<UUID del issuer activo del tenant>',   // ← requerido
+  // ...resto de campos
+})
+```
+
+Para obtener el issuer del tenant actual:
+
+```typescript
+// Obtener el issuer activo del tenant (single-issuer MVP)
+const { data: issuer } = await supabase
+  .from('issuers')
+  .select('id')
+  .eq('is_active', true)
+  .single()
+
+// En entornos multi-issuer, filtrar por tenant_actor_id y seleccionar
+// el issuer apropiado según configuración o UI de admin.
+```
+
+### G.3) Backfill de `membership_invoices` legadas
+
+> ⚠️ Script **manual y opcional**. Ejecutar en staging y revisar resultados
+> antes de aplicar en producción.
+
+**Caso A — Un único issuer activo en el sistema:**
+
+```sql
+-- Dry-run: ver cuántas invoices se actualizarían
+SELECT COUNT(*)
+FROM   membership_invoices
+WHERE  issuer_id IS NULL;
+
+-- Aplicar backfill (solo si hay exactamente 1 issuer activo)
+DO $$
+DECLARE
+    v_issuer_id UUID;
+    v_count     INT;
+BEGIN
+    SELECT COUNT(*), MIN(id)
+    INTO   v_count, v_issuer_id
+    FROM   issuers
+    WHERE  is_active = TRUE;
+
+    IF v_count <> 1 THEN
+        RAISE EXCEPTION
+            'Hay % issuers activos. El backfill automático solo es seguro con exactamente 1. '
+            'Asigne issuer_id manualmente según la lógica de negocio de cada invoice.',
+            v_count;
+    END IF;
+
+    UPDATE membership_invoices
+       SET issuer_id = v_issuer_id
+     WHERE issuer_id IS NULL;
+
+    RAISE NOTICE 'Backfill completado: issuer_id = %', v_issuer_id;
+END;
+$$;
+```
+
+**Caso B — Múltiples issuers activos:**
+
+Asignar `issuer_id` manualmente según la organización dueña del plan de membresía:
+
+```sql
+-- Ejemplo: actualizar invoices de membresías vinculadas a un plan específico
+UPDATE membership_invoices mi
+   SET issuer_id = '<UUID_del_issuer>'
+FROM   memberships m
+WHERE  m.id      = mi.membership_id
+  AND  m.plan_id = '<UUID_del_plan>'
+  AND  mi.issuer_id IS NULL;
+```
+
+### G.4) Restricción futura: NOT NULL
+
+Una vez que todas las filas estén backfilleadas, se puede agregar la restricción:
+
+```sql
+-- En una migración futura, tras verificar que no hay NULLs:
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM membership_invoices WHERE issuer_id IS NULL) THEN
+        RAISE EXCEPTION 'Existen membership_invoices sin issuer_id. Ejecute el backfill antes.';
+    END IF;
+END;
+$$;
+
+ALTER TABLE membership_invoices
+    ALTER COLUMN issuer_id SET NOT NULL;
+```
+
+---
+
 ## TODOs pendientes
+
+- **`membership_invoices.issuer_id` (desde `00024`)**: Nuevas invoices de membresía
+  deben incluir `issuer_id`. Para invoices legadas sin ese campo, ejecutar el backfill
+  de la sección [G.3](#g3-backfill-de-membership_invoices-legadas). Ver también el
+  requisito de asignación en creación (sección [G.2](#g2-requisito-en-creación-de-invoice)).
 
 - **`integration_outbox`**: `emit_fiscal_invoice_from_source` deja el documento en
   `ready_to_send`. Cuando exista una tabla/cola de outbox, encolar la transmisión al
