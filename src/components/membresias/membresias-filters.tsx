@@ -9,9 +9,10 @@ import type { MembershipPlan } from '@/types'
 
 interface MembresiasFiltersProps {
   plans: MembershipPlan[]
+  basePath?: string
 }
 
-export function MembresiasFilters({ plans }: MembresiasFiltersProps) {
+export function MembresiasFilters({ plans, basePath = '/dashboard/membresias' }: MembresiasFiltersProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -27,9 +28,9 @@ export function MembresiasFilters({ plans }: MembresiasFiltersProps) {
       if (newPlan) params.set('plan', newPlan)
       if (newEstado) params.set('estado', newEstado)
       params.set('page', '1')
-      router.replace(`/dashboard/membresias?${params.toString()}`)
+      router.replace(`${basePath}?${params.toString()}`)
     },
-    [router],
+    [router, basePath],
   )
 
   useEffect(() => {
@@ -46,7 +47,7 @@ export function MembresiasFilters({ plans }: MembresiasFiltersProps) {
     setSearch('')
     setPlan('')
     setEstado('')
-    router.replace('/dashboard/membresias?page=1')
+    router.replace(`${basePath}?page=1`)
   }
 
   const hasFilters = search !== '' || plan !== '' || estado !== ''
