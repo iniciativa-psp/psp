@@ -1,7 +1,7 @@
 # FISCAL_MULTI_ISSUER — Guía de Multi-Emisor y Hardening
 
 Repositorio: `iniciativa-psp/psp`  
-Migraciones: `00019_accounting_hardening.sql`, `00020_fiscal_base_ext.sql`, `00021_fiscal_core_multi_issuer.sql`, `00022_multi_tenant_rls_lockdown.sql`
+Migraciones: `00019_accounting_hardening.sql`, `00020_fiscal_base_ext.sql`, `00021_fiscal_core_multi_issuer.sql`, `00022_multi_tenant_rls_lockdown.sql`, `00023_fix_post_payment_tenant_inference.sql`
 
 ---
 
@@ -25,6 +25,7 @@ Este PR agrega tres migraciones incrementales sobre la base establecida en PR #3
 | `00020_fiscal_base_ext.sql` | `tax_id_type`/`tax_id_value` en `actor_tax_profiles`, `tenant_actor_id` en tablas fiscales base |
 | `00021_fiscal_core_multi_issuer.sql` | Nueva firma multi-emisor de `emit_fiscal_invoice_from_source`, `doc_number` automático, `tenant_actor_id` en tablas fiscales core |
 | `00022_multi_tenant_rls_lockdown.sql` | RLS lockdown estricto (tenant NULL → admin-only), inferencia de `tenant_actor_id` en `post_payment_to_journal`, eliminación de `EXCEPTION WHEN OTHERS` en emisión fiscal |
+| `00023_fix_post_payment_tenant_inference.sql` | Corrige inferencia de `tenant_actor_id`: tenant = seller/issuer (no buyer/cliente/donor); marketplace single-seller OK; membresías y donaciones fallan explícitamente |
 
 ---
 
@@ -244,6 +245,50 @@ const { data } = await supabase.rpc('emit_fiscal_invoice_from_source', {
 
 ---
 
+## D.2) Corrección de inferencia de `tenant_actor_id` (`00023`)
+
+> ⚠️ **La inferencia en `00022` era incorrecta.** Asignaba el tenant al buyer/cliente/donor
+> en lugar del seller/issuer (organización que emite). La migración
+> `00023_fix_post_payment_tenant_inference.sql` corrige este comportamiento.
+
+### Regla de negocio confirmada
+
+> **`tenant_actor_id` = seller / issuer (organización que emite el servicio o factura).**
+
+### Nuevo comportamiento por fuente
+
+| Fuente | Comportamiento en `00023` |
+|--------|--------------------------|
+| **Marketplace single-seller** | `tenant_actor_id = MIN(seller_id)` de `marketplace_order_items` |
+| **Marketplace multi-seller** | `RAISE EXCEPTION` — requiere partición (split) de asiento |
+| **Membresías** | `RAISE EXCEPTION` — `memberships.actor_id` es el miembro/cliente, **no** el issuer/tenant. Falta modelar `issuer` o `tenant` explícito en membresías |
+| **Donaciones** | `RAISE EXCEPTION` — `donations.donor_actor_id` es el donante, **no** el recipient/issuer/tenant. Falta modelar `recipient` o `tenant` explícito en donaciones |
+| **Sin fuente reconocida** | `RAISE EXCEPTION` |
+
+### Limitaciones documentadas
+
+- **Membresías**: hasta que se agregue una columna `issuer_actor_id` o `tenant_actor_id`
+  en `memberships` (o en `membership_invoices`), el posting automático de membresías
+  fallará con un mensaje explícito. Esto es intencional: evitar asignar el rol de tenant
+  al cliente/miembro.
+
+- **Donaciones**: hasta que se agregue `recipient_actor_id` o `tenant_actor_id` en
+  `donations`, el posting automático de donaciones fallará con un mensaje explícito.
+  El donante no es el tenant.
+
+### Prerequisito de aplicación manual
+
+Para flujos basados en `payment_id`, aplicar siempre:
+
+```
+00025_add_payment_id_to_sources.sql  →  00022_multi_tenant_rls_lockdown.sql  →  00023_fix_post_payment_tenant_inference.sql
+```
+
+Ejecutar `post_payment_to_journal` con pagos vinculados por `payment_id` **solo después**
+de que `00025` esté aplicado; de lo contrario la función no encontrará fuentes y fallará.
+
+---
+
 ## E) Aplicar las migraciones
 
 ```bash
@@ -256,6 +301,7 @@ psql "$DATABASE_URL" -f supabase/migrations/00020_fiscal_base_ext.sql
 psql "$DATABASE_URL" -f supabase/migrations/00021_fiscal_core_multi_issuer.sql
 psql "$DATABASE_URL" -f supabase/migrations/00025_add_payment_id_to_sources.sql
 psql "$DATABASE_URL" -f supabase/migrations/00022_multi_tenant_rls_lockdown.sql
+psql "$DATABASE_URL" -f supabase/migrations/00023_fix_post_payment_tenant_inference.sql
 ```
 
 > ⚠️ Ejecutar los scripts de backfill de la sección F **antes** de aplicar `00022`
@@ -289,6 +335,11 @@ psql "$DATABASE_URL" -f supabase/migrations/00022_multi_tenant_rls_lockdown.sql
     ├── requiere: tenant_actor_id en tablas contables (00019)
     ├── requiere: tenant_actor_id en tablas fiscales (00020, 00021)
     └── requiere: payment_id en fuentes (00025) para inferencia en post_payment_to_journal
+
+00023_fix_post_payment_tenant_inference
+    ├── requiere: post_payment_to_journal (00019, 00022)
+    ├── requiere: marketplace_order_items.seller_id (00015)
+    └── requiere: payment_id en fuentes (00025)
 ```
 
 La secuencia completa de migraciones queda:
@@ -301,9 +352,17 @@ La secuencia completa de migraciones queda:
 00019_accounting_hardening.sql         ← PR #31
 00020_fiscal_base_ext.sql              ← PR #31
 00021_fiscal_core_multi_issuer.sql     ← PR #31
-00025_add_payment_id_to_sources.sql
-00022_multi_tenant_rls_lockdown.sql    ← PR #33 (este PR)
+00025_add_payment_id_to_sources.sql    ← orden de ejecución, no numérico (ver nota)
+00022_multi_tenant_rls_lockdown.sql    ← PR #33
+00023_fix_post_payment_tenant_inference.sql  ← PR #36 (este PR)
 ```
+
+> **Nota sobre el orden no-numérico de `00025`:** El archivo `00025` lleva ese número
+> porque fue creado (PR #29) antes de que se numeraran `00022`–`00024`. Su contenido
+> (agregar la columna `payment_id` en fuentes) es un prerequisito funcional de `00022`
+> y `00023`: estas migraciones usan `payment_id` para inferir el tenant. Por eso,
+> aunque el número de `00025` es mayor, **debe aplicarse antes** de `00022` y `00023`
+> en cualquier despliegue manual.
 
 ---
 
@@ -559,3 +618,13 @@ ALTER TABLE membership_invoices
   `tenant_actor_id = NULL`. Con el lockdown de `00022`, estas filas serán visibles
   **solo para admin**. Ver sección [F](#f-backfill-opcional-poblar-tenant_actor_id)
   para los scripts de backfill recomendados.
+
+- **Issuer/tenant explícito para membresías**: Agregar `issuer_actor_id` o
+  `tenant_actor_id` en `memberships` o `membership_invoices` para que
+  `post_payment_to_journal` pueda inferir el tenant correctamente en membresías.
+  Hasta entonces, el posting de membresías falla explícitamente (ver `00023`).
+
+- **Recipient/tenant explícito para donaciones**: Agregar `recipient_actor_id` o
+  `tenant_actor_id` en `donations` para que `post_payment_to_journal` pueda inferir
+  el tenant correctamente en donaciones. Hasta entonces, el posting de donaciones
+  falla explícitamente (ver `00023`).
