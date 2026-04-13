@@ -1,11 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { SearchIcon, XIcon } from 'lucide-react'
+
+import type { MembershipPlan } from '@/types'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import type { MembershipPlan } from '@/types'
 
 interface MembresiasFiltersProps {
   plans: MembershipPlan[]
@@ -16,39 +17,47 @@ export function MembresiasFilters({ plans, basePath = '/dashboard/membresias' }:
   const router = useRouter()
   const searchParams = useSearchParams()
 
-  const [search, setSearch] = useState(searchParams.get('search') ?? '')
-  const [plan, setPlan] = useState(searchParams.get('plan') ?? '')
-  const [estado, setEstado] = useState(searchParams.get('estado') ?? '')
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const initial = useMemo(() => {
+    const params = new URLSearchParams(searchParams?.toString())
+    return {
+      search: params.get('search') ?? '',
+      plan: params.get('plan') ?? '',
+      estado: params.get('estado') ?? '',
+    }
+  }, [searchParams])
 
-  const updateParams = useCallback(
-    (newSearch: string, newPlan: string, newEstado: string) => {
-      const params = new URLSearchParams()
-      if (newSearch) params.set('search', newSearch)
-      if (newPlan) params.set('plan', newPlan)
-      if (newEstado) params.set('estado', newEstado)
-      params.set('page', '1')
-      router.replace(`${basePath}?${params.toString()}`)
-    },
-    [router, basePath],
-  )
+  const [search, setSearch] = useState(initial.search)
+  const [plan, setPlan] = useState(initial.plan)
+  const [estado, setEstado] = useState(initial.estado)
 
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => {
-      updateParams(search, plan, estado)
-    }, 300)
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current)
-    }
-  }, [search, plan, estado, updateParams])
+    setSearch(initial.search)
+    setPlan(initial.plan)
+    setEstado(initial.estado)
+  }, [initial])
 
-  function handleClear() {
+  const handleApply = useCallback(() => {
+    const params = new URLSearchParams(searchParams?.toString())
+
+    if (search) params.set('search', search)
+    else params.delete('search')
+
+    if (plan) params.set('plan', plan)
+    else params.delete('plan')
+
+    if (estado) params.set('estado', estado)
+    else params.delete('estado')
+
+    params.set('page', '1')
+    router.replace(`${basePath}?${params.toString()}`)
+  }, [router, basePath, searchParams, search, plan, estado])
+
+  const handleClear = useCallback(() => {
     setSearch('')
     setPlan('')
     setEstado('')
     router.replace(`${basePath}?page=1`)
-  }
+  }, [router, basePath])
 
   const hasFilters = search !== '' || plan !== '' || estado !== ''
 
@@ -63,6 +72,9 @@ export function MembresiasFilters({ plans, basePath = '/dashboard/membresias' }:
           onChange={e => setSearch(e.target.value)}
           className="pl-9"
           aria-label="Buscar miembro"
+          onKeyDown={e => {
+            if (e.key === 'Enter') handleApply()
+          }}
         />
       </div>
 
@@ -97,7 +109,11 @@ export function MembresiasFilters({ plans, basePath = '/dashboard/membresias' }:
         <option value="past_due">En mora</option>
       </select>
 
-      {/* Limpiar */}
+      {/* Aplicar / Limpiar */}
+      <Button variant="outline" onClick={handleApply}>
+        Aplicar
+      </Button>
+
       {hasFilters && (
         <Button variant="outline" size="icon" onClick={handleClear} aria-label="Limpiar filtros">
           <XIcon className="h-4 w-4" />
@@ -106,4 +122,3 @@ export function MembresiasFilters({ plans, basePath = '/dashboard/membresias' }:
     </div>
   )
 }
-
