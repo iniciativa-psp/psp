@@ -15,17 +15,25 @@ Este PR de reparación agrega las tres migraciones faltantes:
 | `00017_fiscal_base.sql` | Perfiles fiscales de actores (`actor_tax_profiles`) y emisores (`issuers`) |
 | `00018_fiscal_core.sql` | Núcleo de facturación PAC-agnóstico: series, documentos, líneas, impuestos, retenciones, transmisiones, log de eventos, reglas paramétricas, RPCs |
 
-## Cómo aplicar las migraciones en orden
+## Aplicación de migraciones (nota importante sobre dependencias)
 
-Las migraciones deben aplicarse de forma secuencial respetando su numeración.
-Si usas **Supabase CLI**:
+En general, las migraciones deben aplicarse de forma secuencial respetando su numeración.
+Si usas **Supabase CLI**, aplica el historial completo con:
 
 ```bash
 # Asegúrate de estar autenticado y conectado al proyecto correcto
 supabase db push
 ```
 
-Si aplicas manualmente con `psql`:
+### ⚠️ Excepción operativa (dependencias por `payment_id`)
+Aunque las migraciones están numeradas, **algunos flujos funcionales** (por ejemplo `post_payment_to_journal(payment_id)`)
+dependen de que existan columnas `payment_id` en las tablas fuente (`marketplace_orders`, `membership_invoices`, `donations`).
+
+Por eso, si vas a ejecutar o probar **posting contable basado en `payment_id`**, asegúrate de que la migración
+`00025_add_payment_id_to_sources.sql` ya fue aplicada **antes** de ejecutar esos flujos (incluso si aplicas manualmente
+con `psql`).
+
+### Aplicación manual con psql (base + hardening)
 
 ```bash
 # PR #30 — migraciones base
@@ -37,12 +45,17 @@ psql "$DATABASE_URL" -f supabase/migrations/00018_fiscal_core.sql
 psql "$DATABASE_URL" -f supabase/migrations/00019_accounting_hardening.sql
 psql "$DATABASE_URL" -f supabase/migrations/00020_fiscal_base_ext.sql
 psql "$DATABASE_URL" -f supabase/migrations/00021_fiscal_core_multi_issuer.sql
+
+# Dependencia para flujos basados en payment_id (posting / inferencia)
+psql "$DATABASE_URL" -f supabase/migrations/00025_add_payment_id_to_sources.sql
+
+# Fix de inferencia de tenant (tenant = seller/issuer) para post_payment_to_journal
+psql "$DATABASE_URL" -f supabase/migrations/00023_fix_post_payment_tenant_inference.sql
 ```
 
-> **Importante:** las migraciones deben ejecutarse en el orden numérico indicado porque
-> `00018_fiscal_core.sql` referencia tablas creadas en `00017_fiscal_base.sql` (`issuers`,
-> `actor_tax_profiles`), y `00016_accounting.sql` referencia `payment_concepts` y
-> `payments` que existen desde `00002_pagos.sql`.
+> Nota: `00023_fix_post_payment_tenant_inference.sql` reemplaza la función `post_payment_to_journal` para que el
+> `tenant_actor_id` se derive del **seller/issuer**. Con el esquema actual, memberships y donations requerirán
+> modelar explícitamente issuer/recipient/tenant para automatizar el posting.
 
 ## Nota sobre numeración
 
