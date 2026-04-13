@@ -33,9 +33,7 @@ export default async function MembresiasTenantPickerPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Sin organizaciones</CardTitle>
-            <CardDescription>
-              Solicita acceso a un administrador para que te agregue a un tenant.
-            </CardDescription>
+            <CardDescription>Solicita acceso a un administrador para que te agregue a un tenant.</CardDescription>
           </CardHeader>
           <CardContent>
             {!profile ? (
